@@ -19,21 +19,3 @@ PROGRAM OVERVIEW: SINGLE FIBERED
 EXTRACREDIT: Sniff DNS requests from another machine and continue from step 4
 
 
-$DEFINITIONS
-	#define ARGNUM 2
-
-
-$SETUP (in main())
-	open raw socket
-
-
-$LOOP
-	while(1)
-		check raw socket file descriptor for outgoing packets
-
-
-code for sniffing outgoing & incoming packets
-http://www.binarytides.com/packet-sniffer-code-in-c-using-linux-sockets-bsd-part-2/
-
-
-$EXIT

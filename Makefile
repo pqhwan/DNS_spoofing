@@ -1,7 +1,5 @@
 C = gcc
-CFLAGS = -w -Wall -std=gnu99 -D_REENTRANT -D_XOPEN_SOURCE=500 -D_POSIX_C_SOURCE=200112L
-
-LDFLAGS = -pthread 
+CFLAGS = -w -Wall -std=gnu99 -D_REENTRANT -D_XOPEN_SOURCE=500 -D_POSIX_C_SOURCE=200112L  
 
 #source code
 SRC=$(wildcard *.c)
