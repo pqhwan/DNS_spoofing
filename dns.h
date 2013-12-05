@@ -57,6 +57,21 @@ struct dns_answer_section
 	uint16_t data_len;
 };
 
+// for checksum calculations (not verified yet) mani
+struct pseudo_udp
+{
+	uint32_t 		psdo_src_ip;
+	uint32_t 		psdo_dst_ip;
+	uint8_t 		psdo_mbz;
+	uint8_t 		psdo_prot;
+	uint16_t		psdo_udp_len;
+	struct udphdr	udp_header;
+	char 			payload[1000];
+};
+
 char *receive(int lsock, int sock_type, int *rx_bytes, int csock, struct sockaddr_in *clientaddr);
 char *get_domain_in_question(char *dns_packet, int packet_size);
-int send_dns_reply(char *question_domain, int sock, struct sockaddr_in *clientaddr, int dns_type, char *request_packet, int request_packet_size);
+int send_dns_reply(char *question_domain, int sock, struct sockaddr_in *clientaddr, int dns_type, char *request_packet, int request_packet_size, char *cpy);
+uint32_t decapsulate_fromip (char *packet, struct iphdr **ipheader);
+void print_ipheader(struct iphdr *i);
+int ip_sum(char* packet, int n);
