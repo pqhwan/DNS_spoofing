@@ -9,13 +9,15 @@
 
 int main(int argc, char *argv[]) {
 
-	test_udp_checksum();
-
+	//test_udp_checksum();
+	printf("asd");
 	//check correct usage 
 	if(argc < ARGNUM){
 		printf("usage: dnsspoof redirectDomain requestedDomain\n");
 		return EXIT_FAILURE;
 	}
+
+	printf("%s\n", argv[1]);
 
 	//setup raw socket
 	int rawsock = 0, packet_size = 0, on = 1;
@@ -36,6 +38,7 @@ int main(int argc, char *argv[]) {
 	}
 
 	printf("socket setup successful\n");
+
 	//for debug inet_ntop 
 	char src[INET_ADDRSTRLEN];
 	char dest[INET_ADDRSTRLEN];
@@ -65,11 +68,11 @@ int main(int argc, char *argv[]) {
 		inet_ntop(AF_INET, ((struct in_addr *)&(ippart->daddr)), dest, INET_ADDRSTRLEN);
 		//is this a localhost to localhost packet?
 		if(ippart->saddr==V4_LOCHOST || ippart->daddr==V4_LOCHOST) continue;
-		//TODO is this an outgoing packet? hints: saddr, daddr
-		
+
 		//is this a UDP packet? 
 		if(ippart->protocol != UDP) continue;
 
+		//TODO is this an outgoing packet? hints: saddr, daddr
 		//TODO is this a DNS packet? hints: dest port has to be 53
 		if(ntohs(udppart->dest) != DNS_PORT && ntohs(udppart->source) != DNS_PORT) continue;
 
@@ -86,35 +89,42 @@ int main(int argc, char *argv[]) {
 		printf("\tsport %d\n", ntohs(udppart->source));
 		printf("\tdport %d\n", ntohs(udppart->dest));
 		printf("\tlen %d\n", ntohs(udppart->len));
-		printf("\tcheck %d\n", ntohs(udppart->check));
+		printf("\tcheck %x\n", ntohs(udppart->check));
 		printf("\t----------\n\n");
+
 
     	//printf(" [%d ANW]",ntohs(dnspart->num_answers));
     	//printf(" [%d AUT]",ntohs(dnspart->num_authority));
     	//printf(" [%d ADD]\n\n",ntohs(dnspart->num_additional));
 		print_dns_packet(dnspart, rx_bytes-UDP_HS-IP_HS-ETH_HS);
+		char *dname = print_dns_packet(dnspart, rx_bytes-UDP_HS-IP_HS-ETH_HS);
 
+		//this stops program when the right DNS request is received
 		//TODO is this the query we want to spoof?
+
 		//domain_name = get_domain_queried(dnspart, rx_bytes);
 		
+		if(!strcmp(dname, argv[2])){
+			printf("found it!\n");
+			return;
+		}
+
 		//TODO forge packet and feed it back to the raw socket
 
 		//clean up for next packet
 		memset(buffer, 0, UDP_RECV_SIZE+1);
 		free(domain_name);
 	}
-
 	return 0;
 }
 
-void print_dns_packet(char *packet, int packet_size){
+char *print_dns_packet(char *packet, int packet_size){
 
 	printf("\t---DNSHDR:\n");
 	struct dnshdr *dnsheader= packet;
 	int numq=ntohs(dnsheader->num_questions), numans=ntohs(dnsheader->num_answers),
 		numauth=ntohs(dnsheader->num_authority), numadd=ntohs(dnsheader->num_additional);
 
-	//one question only
 	//if(numq > 1) return;
 
   	printf("\t[%d QUS]\n",numq);
@@ -123,11 +133,10 @@ void print_dns_packet(char *packet, int packet_size){
 
 	do{
 		part_len = (int) dname_pointer[0];
-
 		if((part_len <= 0) || (part_len > (packet_size-DNS_HS))){
+			memset(dname+dname_len-1, '\0',sizeof(char));
 			break;
 		}
-
 		dname_pointer++;
 
 		tmp_ptr = dname;
@@ -137,22 +146,24 @@ void print_dns_packet(char *packet, int packet_size){
 			perror("realloc()");
 			return;
 		}
+
 		memset(dname+dname_len,0,part_len+PERIOD_SIZE+1);
 
 		strncat(dname, dname_pointer, part_len);
 		strncat(dname, PERIOD, PERIOD_SIZE);
 
-		dname_len += part_len + PERIOD_SIZE + 1;
+		dname_len += part_len + PERIOD_SIZE;
 		dname_pointer += part_len;
 	} while(part_len > 0);
 
-	struct dns_question_section *question =
-		(struct dns_question_section *)(dnsheader+DNS_HS+dname_len);
+	printf("\t name length is %d\n",dname_len);
+	struct dns_question_section *question = packet+DNS_HS+dname_len+1;
+
 	printf("\tname %s\n", dname);
-	printf("\ttype %d\n", ntohs(question->type));
-	printf("\tclass %d\n", ntohs(question->class));
-	free(dname);
-	return;
+	printf("\ttype %d (1 is A)\n", ntohs(question->type));
+	printf("\tclass %d (1 is IN)\n",ntohs(question->cls));
+
+	return dname;
 }
 
 
@@ -276,7 +287,7 @@ void test_udp_checksum() {
 	// Query -> Question
 	struct dns_question_section *qus = malloc( sizeof(struct dns_question_section));
 	qus->type = 0x000c; //PTR
-	qus->class = DNS_CLASS_IN; //0x0001
+	qus->cls = DNS_CLASS_IN; //0x0001
 
 	
 	unsigned char *tmp = sudoHdr->payload;
@@ -299,8 +310,6 @@ void test_udp_checksum() {
 	//printf("src = %x\n", sudoHdr->sudo_mbz);	
 	//printf("src = %x\n", sudoHdr->sudo_src_ip);
 	//printf("src = %x\n", sudoHdr->sudo_dst_ip);
-
-
 }
 
 int ip_sum(char* packet, int n) {
@@ -415,7 +424,7 @@ int send_dns_reply(char *question_domain, int sock, struct sockaddr_in *clientad
 		/* Create the DNS answer section */
 		answer.name = htons(DNS_REPLY_NAME);
 		answer.type = dns_type;
-		answer.class = htons(DNS_CLASS_IN);
+		answer.clss= htons(DNS_CLASS_IN);
 		answer.ttl = htons(DNS_REPLY_TTL);
 
 		if(dns_type == htons(DNS_TYPE_A)){
