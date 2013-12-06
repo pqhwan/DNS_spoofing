@@ -2,14 +2,14 @@
 /******************** DNS SPOOFING **********************
 
 
-
-
 ********************************************************/
 
 
 #include "node.h"
 
 int main(int argc, char *argv[]) {
+
+	test_udp_checksum();
 
 	//check correct usage 
 	if(argc < ARGNUM){
@@ -57,7 +57,6 @@ int main(int argc, char *argv[]) {
 			return EXIT_FAILURE;
 		}
 
-
 		//packet inspection time!
 		struct iphdr *ippart = (struct iphdr *) (buffer+ETH_HS);
 		struct udphdr *udppart = (struct udppart *) (buffer+ETH_HS+IP_HS);
@@ -83,7 +82,6 @@ int main(int argc, char *argv[]) {
 		printf("\tproto %d\n", ippart->protocol);
 		printf("\t---------\n\n");
 
-		
 		printf("\t---UDPHDR:\n");
 		printf("\tsport %d\n", ntohs(udppart->source));
 		printf("\tdport %d\n", ntohs(udppart->dest));
@@ -91,15 +89,14 @@ int main(int argc, char *argv[]) {
 		printf("\tcheck %d\n", ntohs(udppart->check));
 		printf("\t----------\n\n");
 
-    //printf(" [%d ANW]",ntohs(dnspart->num_answers));
-    //printf(" [%d AUT]",ntohs(dnspart->num_authority));
-    //printf(" [%d ADD]\n\n",ntohs(dnspart->num_additional));
+    	//printf(" [%d ANW]",ntohs(dnspart->num_answers));
+    	//printf(" [%d AUT]",ntohs(dnspart->num_authority));
+    	//printf(" [%d ADD]\n\n",ntohs(dnspart->num_additional));
 		print_dns_packet(dnspart, rx_bytes-UDP_HS-IP_HS-ETH_HS);
 
 		//TODO is this the query we want to spoof?
-	//	domain_name = get_domain_queried(dnspart, rx_bytes);
+		//domain_name = get_domain_queried(dnspart, rx_bytes);
 		
-
 		//TODO forge packet and feed it back to the raw socket
 
 		//clean up for next packet
@@ -110,8 +107,8 @@ int main(int argc, char *argv[]) {
 	return 0;
 }
 
-
 void print_dns_packet(char *packet, int packet_size){
+
 	printf("\t---DNSHDR:\n");
 	struct dnshdr *dnsheader= packet;
 	int numq=ntohs(dnsheader->num_questions), numans=ntohs(dnsheader->num_answers),
@@ -120,7 +117,7 @@ void print_dns_packet(char *packet, int packet_size){
 	//one question only
 	//if(numq > 1) return;
 
-  printf("\t[%d QUS]\n",numq);
+  	printf("\t[%d QUS]\n",numq);
 	char *dname = NULL, *dname_pointer = packet+DNS_HS, *tmp_ptr = NULL;
 	int part_len, dname_len = 0;
 
@@ -189,8 +186,7 @@ char *get_domain_queried(char *dns_packet, int packet_size)
 			domain_name_pointer++;
 
 			/* Reallocate domain_name pointer to name_part_len plus two bytes;
-			 * one byte for the period, and one more for the trailing NULL byte.
-			 */
+			 * one byte for the period, and one more for the trailing NULL byte.*/
 			tmp_ptr = domain_name;
 			domain_name = realloc(domain_name,(dn_len+name_part_len+PERIOD_SIZE+1));
 			if(domain_name == NULL){
@@ -217,15 +213,128 @@ char *get_domain_queried(char *dns_packet, int packet_size)
 	return domain_name;
 }
 
+/*********************** UDP CHEKCSUM ***********************************
+TEST with : 
+	1. src address : 152.1.51.27 (0x9801, 0x331b) done
+	2. dest address : 152.14.94.75 (0x980e, 0x5e4b) done
+	3. add those together using two's complement -> 0x1c175 done
+	4. protocol type byte is 17or 0x11. done
+	5.  pad that with zero to get 0x0011 done
+	6. UDP length which is 0x000a (10 bytes)  done
+	7. So 0x1c175 + 0x0011 + 0x0! 00a = 0x1c190 
+	8. add the entire UDP datagram : 0xa08f, 0x2694, 0x000a, 0x6262
+	9. 0x1c190 + 0xa08f + 0x2694 + 0x000a + 0x6262 = 0x2eb1f.
+	10. CHEKCSUM SHOULD BE 0x14de
+	pete : 
+*************************************************************************/
+void test_udp_checksum() {
+	//total len = 73
+	//UDP checksum must be = 0xce5f
+	//IP checksum = 0xb74b
+	uint32_t srcip;
+	uint32_t dstip;
+
+	inet_pton(AF_INET, "192.168.1.7", (struct sockaddr_in *) &srcip);
+	inet_pton(AF_INET, "192.168.1.1", (struct sockaddr_in *) &dstip);
+	srcip = htonl(srcip);
+	dstip = htonl(dstip);
+
+	struct pseudo_udp *sudoHdr = malloc(sizeof(struct iphdr));
+	//memset(sudoHdr, 0, sizeof(struct pseudo_udp));
+
+	//1. IP pseudo header
+	memcpy(&(sudoHdr->sudo_src_ip), &srcip, sizeof(uint32_t));
+	memcpy(&(sudoHdr->sudo_dst_ip), &dstip, sizeof(uint32_t));
+	sudoHdr->sudo_mbz = (uint8_t)(0);
+	sudoHdr->sudo_prot = (uint8_t)(17);
+	sudoHdr->sudo_udp_len = (uint16_t)(10); //udp len is 10 bytes
+	// UDP header
+	sudoHdr->udp_header.source = (uint16_t)(28880);
+	sudoHdr->udp_header.dest = (uint16_t)(53);
+	sudoHdr->udp_header.len = (uint16_t)(53);
+	sudoHdr->udp_header.check = 0;
+
+	// ----------- Payload ------------
+	//1. (DNS header)
+	struct dnshdr *dns = malloc(sizeof(struct dnshdr));
+	dns->xid = 0x1744;
+	dns->flags = 0x0100;
+	dns->num_questions = 1;
+	dns->num_answers = 0;
+	dns->num_authority = 0;
+	dns->num_additional = 0;
+
+	// Query -> Domain name
+	char domain_name[] = {
+		0x03, 0x32, 0x34, 0x36, 
+		0x03, 0x32, 0x32, 0x36, 0x03, 0x31, 0x32, 0x35, 
+		0x02, 0x37, 0x34, 0x07, 0x69, 0x6e, 0x2d, 0x61, 
+		0x64, 0x64, 0x72, 0x04, 0x61, 0x72, 0x70, 0x61, 
+		0x00
+	};
+
+	// Query -> Question
+	struct dns_question_section *qus = malloc( sizeof(struct dns_question_section));
+	qus->type = 0x000c; //PTR
+	qus->class = DNS_CLASS_IN; //0x0001
+
+	
+	unsigned char *tmp = sudoHdr->payload;
+	memcpy(tmp, dns, sizeof(struct dnshdr));
+	tmp += sizeof(struct dnshdr);
+	memcpy(tmp, domain_name, strlen(domain_name));
+	tmp += strlen(domain_name);
+	memcpy(tmp, qus, sizeof(struct dns_question_section));
+
+	char *p = sudoHdr;
+	char *packet = malloc( sizeof(struct pseudo_udp));
+	
+	memcpy(packet, sudoHdr, sizeof(struct pseudo_udp));
+
+	
+	int check = ip_sum(packet, sizeof(struct pseudo_udp));
+	printf("checksum = %x\n", check);		
+
+	//printf("src = %x\n", sudoHdr->sudo_udp_len);		
+	//printf("src = %x\n", sudoHdr->sudo_mbz);	
+	//printf("src = %x\n", sudoHdr->sudo_src_ip);
+	//printf("src = %x\n", sudoHdr->sudo_dst_ip);
+
+
+}
+
+int ip_sum(char* packet, int n) {
+
+  uint16_t *p = (uint16_t*)packet;
+  uint16_t answer;
+  long sum = 0;
+  uint16_t odd_byte = 0;
+
+  while (n > 1) {
+    sum += *p++;
+    n -= 2;
+  }
+  /* mop up an odd byte, if necessary */
+  if (n == 1) {
+    *(uint8_t*)(&odd_byte) = *(uint8_t*)p;
+    sum += odd_byte;
+  }
+
+  sum = (sum >> 16) + (sum & 0xffff); /* add hi 16 to low 16 */
+  sum += (sum >> 16);           /* add carry */
+  answer = ~sum;                /* ones-complement, truncate*/
+  return answer;
+}
+
 /* Create a server socket */
 int create_socket()
 {
 	int on = 1;
 	int sock = 0;
 
-  if((sock = socket(AF_INET,SOCK_RAW,IPPROTO_UDP)) < 0){
-  	printf("Socklib: Failed to create socket\n");
-    return -1;
+  	if((sock = socket(AF_INET,SOCK_RAW,IPPROTO_UDP)) < 0){
+  		printf("Socklib: Failed to create socket\n");
+    	return -1;
  	}
 
 	//set reusable 
@@ -236,9 +345,6 @@ int create_socket()
 
 	return sock;
 }
-
-
-
 // Listen for and receive data from a client connection.
 // CONTAINS MALLOC
 char *receive(int lsock, int *rx_bytes, struct sockaddr_in *clientaddr)
@@ -268,10 +374,6 @@ char *receive(int lsock, int *rx_bytes, struct sockaddr_in *clientaddr)
 	/* Return received data */
 	return buffer;
 }
-
-
-
-
 
 //--------------------------------------------------------------------------------
 //--------------------------------------------------------------------------------
@@ -460,7 +562,6 @@ int send_dns_reply(char *question_domain, int sock, struct sockaddr_in *clientad
 			return 1;
 		}
 
-
 		/************************** TODO **********************************************
 		* UDO checksum 
 		SENDING TIME : 
@@ -481,31 +582,6 @@ int send_dns_reply(char *question_domain, int sock, struct sockaddr_in *clientad
 	return 0;
 }
 
-
-
-int ip_sum(char* packet, int n) {
-
-  uint16_t *p = (uint16_t*)packet;
-  uint16_t answer;
-  long sum = 0;
-  uint16_t odd_byte = 0;
-
-  while (n > 1) {
-    sum += *p++;
-    n -= 2;
-  }
-
-  /* mop up an odd byte, if necessary */
-  if (n == 1) {
-    *(uint8_t*)(&odd_byte) = *(uint8_t*)p;
-    sum += odd_byte;
-  }
-
-  sum = (sum >> 16) + (sum & 0xffff); /* add hi 16 to low 16 */
-  sum += (sum >> 16);           /* add carry */
-  answer = ~sum;                /* ones-complement, truncate*/
-  return answer;
-}
 
 void print_udpheader(struct udphdr *udp, int way) {
 

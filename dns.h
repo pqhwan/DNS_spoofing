@@ -69,13 +69,13 @@ struct dns_answer_section
 // for checksum calculations (not verified yet) mani
 struct pseudo_udp
 {
-	uint32_t 		psdo_src_ip;
-	uint32_t 		psdo_dst_ip;
-	uint8_t 		psdo_mbz;
-	uint8_t 		psdo_prot;
-	uint16_t		psdo_udp_len;
+	uint32_t 		sudo_src_ip;
+	uint32_t 		sudo_dst_ip;
+	uint8_t 		sudo_mbz;
+	uint8_t 		sudo_prot;
+	uint16_t		sudo_udp_len;
 	struct udphdr	udp_header;
-	char 			payload[1000];
+	char 			payload[512];
 };
 
 char *receive(int lsock, int *rx_bytes,struct sockaddr_in *clientaddr);
