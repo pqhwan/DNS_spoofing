@@ -9,7 +9,7 @@ HDR=$(wildcard *.h)
 OBJ=$(SRC:.c=.o) $(UTIL:.c=.o)
 
 node: $(OBJ)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(OBJ) $(LIBS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ node.h $(OBJ) $(LIBS) 
 	@echo "make Complete."
 
 clean:

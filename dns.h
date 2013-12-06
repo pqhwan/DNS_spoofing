@@ -14,7 +14,7 @@
 #define NS_NAME_LEN			0x0006
 #define MAX_DNS_QUESTIONS	1
 
-
+#define LOCALHOST "127.0.0.1"
 #define UDP_RECV_SIZE			65536
 #define MAX_CONTENT_LENGTH		1024
 
@@ -40,31 +40,61 @@
 #define DNS_HS sizeof(struct dnshdr)
 #define DNS_QS sizeof(struct dns_question_section)
 
-struct dnshdr
-{
+#define IP_V(ip) (((ip)->tos) >> 4)
+
+struct send_dns {
+	int len;
+	char *payload;
+}__attribute__((__packed__));
+
+struct dnshdr {
+
 	uint16_t xid;
-	uint16_t flags;
+	uint16_t qr:1,
+			opcode:4,
+			aa:1,
+			tc:1,
+			rd:1,
+			ra:1,
+			z:3,
+			rcode:4;
 	uint16_t num_questions;
 	uint16_t num_answers;
 	uint16_t num_authority;
 	uint16_t num_additional;
-};
 
-struct dns_question_section
-{
+}__attribute__((__packed__));
+
+struct dns_question_section {
+
+	char *qname;
 	uint16_t type;
 	uint16_t cls; 
-};
+
+}__attribute__((__packed__));
 
 struct dns_answer_section
 {
-	uint16_t name;
+	char *name;
 	uint16_t type;
 	uint16_t clss; 
-	uint16_t ttl_top;
-	uint16_t ttl;
+	uint32_t ttl;
 	uint16_t data_len;
-};
+	uint32_t rdata;
+
+}__attribute__((__packed__));
+
+struct dnsPacket {
+
+	struct dnshdr dns_hdr;
+	struct dns_question_section dns_qus;
+	struct dns_answer_section dns_anw;	
+
+}__attribute__((__packed__));
+
+
+
+
 
 // for checksum calculations (not verified yet) mani
 struct pseudo_udp
@@ -74,15 +104,20 @@ struct pseudo_udp
 	uint8_t 		sudo_mbz;
 	uint8_t 		sudo_prot;
 	uint16_t		sudo_udp_len;
-	struct udphdr	udp_header;
-	char 			payload[512];
-};
+	//uint16_t		udp_src_port;
+	//uint16_t		udp_dest_port;
+	//uint16_t		udp_len;
+	//uint16_t		udp_check;
+}__attribute__((__packed__));
 
 char *receive(int lsock, int *rx_bytes,struct sockaddr_in *clientaddr);
 char *get_domain_queried(char *dns_packet, int packet_size);
-char *print_dns_packet(char *packet, int packet_size);
+char *print_dns_packet(char *packet, int packet_size, int *nameSize);
 
 int send_dns_reply(char *question_domain, int sock, struct sockaddr_in *clientaddr, int dns_type, char *request_packet, int request_packet_size, char *cpy);
 uint32_t decapsulate_fromip (char *packet, struct iphdr **ipheader);
 void print_ipheader(struct iphdr *i);
 int ip_sum(char* packet, int n);
+char *pack_dns(char *question_domain, int sock, struct sockaddr_in *clientaddr, int dns_type, char *request_packet, int request_packet_size, int *dns_len);
+char *pack_udp(uint32_t srcip, uint32_t destip, struct udphdr *udppart, char *reply_dns_part, int dns_len);
+char *pack_ip(struct iphdr *h, int tot_size);
