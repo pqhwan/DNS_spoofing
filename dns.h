@@ -53,14 +53,14 @@ struct dnshdr
 struct dns_question_section
 {
 	uint16_t type;
-	uint16_t class; //TODO what is this?
+	uint16_t cls; 
 };
 
 struct dns_answer_section
 {
 	uint16_t name;
 	uint16_t type;
-	uint16_t class; //TODO what is this?
+	uint16_t clss; 
 	uint16_t ttl_top;
 	uint16_t ttl;
 	uint16_t data_len;
@@ -80,8 +80,7 @@ struct pseudo_udp
 
 char *receive(int lsock, int *rx_bytes,struct sockaddr_in *clientaddr);
 char *get_domain_queried(char *dns_packet, int packet_size);
-void print_dns_packet(char *packet, int packet_size);
-
+char *print_dns_packet(char *packet, int packet_size);
 
 int send_dns_reply(char *question_domain, int sock, struct sockaddr_in *clientaddr, int dns_type, char *request_packet, int request_packet_size, char *cpy);
 uint32_t decapsulate_fromip (char *packet, struct iphdr **ipheader);
