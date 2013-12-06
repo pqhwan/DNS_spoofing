@@ -302,8 +302,6 @@ int send_dns_reply(char *question_domain, int sock, struct sockaddr_in *clientad
 		/************************** TODO **********************************************
 		* UDO checksum 
 		SENDING TIME : 
-			1. store the ip info from the incoming packets to use here to make a ip packet
-				(probably use encapsulate ip from TCP project)
 			TODO : I am not using the command line argument for now.
 			TEMPORARILY : we want to redirect all traffics to www.google.com --> www.bbc.co.uk
 				IN DNS PACKET : alias
