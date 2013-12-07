@@ -14,6 +14,7 @@
 #define NS_NAME_LEN			0x0006
 #define MAX_DNS_QUESTIONS	1
 
+#define MAX_TTL				64
 #define LOCALHOST "127.0.0.1"
 #define UDP_RECV_SIZE			65536
 #define MAX_CONTENT_LENGTH		1024
@@ -32,14 +33,14 @@
 #define DNS_PORT			53
 
 #define UDP 17
-
+#define MAX_UDP				512
 #define V4_LOCHOST 0x0100007f
 #define ETH_HS sizeof(struct ethhdr) //TODO could be wrong
 #define IP_HS sizeof(struct iphdr)
 #define UDP_HS sizeof(struct udphdr)
 #define DNS_HS sizeof(struct dnshdr)
 #define DNS_QS sizeof(struct dns_question_section)
-
+#define IP_UDP_HS sizeof(struct iphdr)+sizeof(struct udphdr)
 #define IP_V(ip) (((ip)->tos) >> 4)
 
 struct send_dns {
@@ -48,16 +49,9 @@ struct send_dns {
 }__attribute__((__packed__));
 
 struct dnshdr {
-
+	//Flags from RFC
 	uint16_t xid;
-	uint16_t qr:1,
-			opcode:4,
-			aa:1,
-			tc:1,
-			rd:1,
-			ra:1,
-			z:3,
-			rcode:4;
+	uint16_t qr:1,opcode:4,	aa:1,tc:1,rd:1,ra:1,z:3,rcode:4;
 	uint16_t num_questions;
 	uint16_t num_answers;
 	uint16_t num_authority;
@@ -75,6 +69,7 @@ struct dns_question_section {
 
 struct dns_answer_section
 {
+
 	char *name;
 	uint16_t type;
 	uint16_t clss; 
